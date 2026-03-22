@@ -1,0 +1,5 @@
+flask
+flask-cors
+requests
+pycryptodome
+yt-dlp>=2024.11.18
