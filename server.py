@@ -44,8 +44,19 @@ SEARCH_OPTS = {
 STREAM_OPTS = {
     'quiet': True,
     'no_warnings': True,
-    # Intentionally leaving out strict 'format' restrictions
-    # so yt-dlp fetches all formats, allowing your custom logic to filter them.
+
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'web'],
+        }
+    },
+
+    'http_headers': {
+        'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; Android 13)',
+    },
+
+    'retries': 10,
+    'fragment_retries': 10,
 }
 
 if _active_cookie_path:
