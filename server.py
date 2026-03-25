@@ -39,7 +39,8 @@ def get_cookie_path():
 _active_cookie_path = get_cookie_path()
 
 # ── yt-dlp strategies ──────────────────────────────────────────────────
-AUDIO_FORMAT = 'bestaudio[vcodec=none][acodec!=none]/bestaudio'
+# CHANGED: Much more forgiving format string to prevent "Requested format not available" errors
+AUDIO_FORMAT = 'bestaudio/best'
 
 # Updated clients to bypass modern YouTube blocks
 STRATEGIES = [
@@ -74,18 +75,32 @@ def get_audio(vid_id):
                     download=False
                 )
                 fmts = info.get('formats', [])
+                
+                # 1. Try to find a pure audio stream first
                 audio = [
                     f for f in fmts
                     if f.get('vcodec') in ('none', None, '')
                     and f.get('acodec') not in ('none', None, '')
                     and f.get('url')
                 ]
+                
+                # 2. If no pure audio exists, fall back to ANY format that contains audio
+                if not audio:
+                    audio = [
+                        f for f in fmts 
+                        if f.get('acodec') not in ('none', None, '') 
+                        and f.get('url')
+                    ]
+                
+                # 3. Absolute fallback: anything with a URL
                 if not audio:
                     audio = [f for f in fmts if f.get('url')]
+                    
                 if not audio:
                     errors.append(f"S{i+1}: no audio formats found")
                     continue
                 
+                # Sort by bitrate
                 best = sorted(audio, key=lambda f: f.get('abr') or 0, reverse=True)[0]
                 print(f"✅ Strategy {i+1} worked | abr={best.get('abr')}")
                 return best, info
