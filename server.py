@@ -33,7 +33,7 @@ def get_cookie_path():
 
 _active_cookie_path = get_cookie_path()
 
-# ── yt-dlp Options (From User's Original Working Code) ─────────────────
+# ── yt-dlp Options ─────────────────────────────────────────────────────
 SEARCH_OPTS = {
     'quiet': True,
     'no_warnings': True,
@@ -44,7 +44,8 @@ SEARCH_OPTS = {
 STREAM_OPTS = {
     'quiet': True,
     'no_warnings': True,
-    'format': 'bestaudio/best',
+    # Intentionally leaving out strict 'format' restrictions
+    # so yt-dlp fetches all formats, allowing your custom logic to filter them.
 }
 
 if _active_cookie_path:
@@ -52,7 +53,7 @@ if _active_cookie_path:
     STREAM_OPTS['cookiefile'] = _active_cookie_path
 
 def extract_best_audio(vid_id):
-    """User's proven extraction logic."""
+    """Uses the proven custom list comprehension logic to find the best audio format."""
     with yt_dlp.YoutubeDL(STREAM_OPTS) as ydl:
         info = ydl.extract_info(
             f"https://www.youtube.com/watch?v={vid_id}",
@@ -60,17 +61,20 @@ def extract_best_audio(vid_id):
         )
         formats = info.get('formats', [])
 
-        # Prefer audio-only formats
+        # Prefer pure audio-only formats
         audio_only = [
             f for f in formats
             if f.get('vcodec') in ('none', None) and f.get('acodec') not in ('none', None) and f.get('url')
         ]
+        
+        # Fallback to any format with a URL if pure audio isn't separated
         if not audio_only:
             audio_only = [f for f in formats if f.get('url')]
 
         if not audio_only:
             raise Exception("No playable formats found")
 
+        # Sort by bitrate to get the best quality
         best = sorted(audio_only, key=lambda f: f.get('abr') or 0, reverse=True)[0]
         return best, info
 
@@ -123,12 +127,17 @@ def search():
                 duration = entry.get('duration') or 0
                 if duration > 600:  # skip anything over 10 mins
                     continue
+                    
+                vid_id = entry.get('id', '')
+                if not vid_id or len(vid_id) != 11:
+                    continue
+                    
                 results.append({
-                    'id':       entry.get('id', ''),
+                    'id':       vid_id,
                     'title':    entry.get('title', ''),
                     'channel':  entry.get('uploader') or entry.get('channel', ''),
                     'duration': duration,
-                    'thumb':    f"https://i.ytimg.com/vi/{entry.get('id')}/mqdefault.jpg",
+                    'thumb':    f"https://i.ytimg.com/vi/{vid_id}/mqdefault.jpg",
                     'source':   'youtube',
                 })
             return jsonify(results[:15])
@@ -155,8 +164,10 @@ def trending():
             for entry in info.get('entries', []):
                 dur = entry.get('duration') or 0
                 if dur > 600: continue
+                
                 vid_id = entry.get('id', '')
-                if not vid_id: continue
+                if not vid_id or len(vid_id) != 11: 
+                    continue
                 
                 results.append({
                     'id': vid_id,
@@ -174,7 +185,8 @@ def trending():
 @app.route('/stream')
 def stream():
     vid_id = request.args.get('id', '').strip()
-    if not vid_id: return jsonify({'error': 'no id'}), 400
+    if not vid_id or len(vid_id) != 11: 
+        return jsonify({'error': 'invalid YouTube ID'}), 400
     
     try:
         best, info = extract_best_audio(vid_id)
@@ -193,7 +205,8 @@ def stream():
 @app.route('/proxy')
 def proxy():
     vid_id = request.args.get('id', '').strip()
-    if not vid_id: return jsonify({'error': 'no id'}), 400
+    if not vid_id or len(vid_id) != 11: 
+        return jsonify({'error': 'invalid YouTube ID'}), 400
     
     try:
         best, _ = extract_best_audio(vid_id)
