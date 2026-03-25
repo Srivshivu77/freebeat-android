@@ -15,12 +15,8 @@ CORS(app)
 WEB_CLIENT_ID = "224375227718-l5uid2p3cm61bgofsc01skoqn217csqi.apps.googleusercontent.com"
 
 # ── Cookie Loading ─────────────────────────────────────────────────────
-# We no longer use OAuth2 because YouTube killed the TV login endpoint.
-# We exclusively use a Netscape formatted cookies.txt file or env var.
-
 def get_cookie_path():
     """Extracts Netscape cookies from YOUTUBE_COOKIES env var or local file."""
-    # 1. Check if we have the environment variable set (Render)
     content = os.environ.get('YOUTUBE_COOKIES', '').strip()
     if content and "# Netscape HTTP Cookie File" in content:
         tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
@@ -29,7 +25,6 @@ def get_cookie_path():
         tmp.close()
         return tmp.name
         
-    # 2. Fallback to a local file named 'cookies.txt' in the same folder
     local_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
     if os.path.exists(local_path):
         return local_path
@@ -38,79 +33,46 @@ def get_cookie_path():
 
 _active_cookie_path = get_cookie_path()
 
-# ── yt-dlp strategies ──────────────────────────────────────────────────
-# CHANGED: Much more forgiving format string to prevent "Requested format not available" errors
-AUDIO_FORMAT = 'bestaudio/best'
+# ── yt-dlp Options (From User's Original Working Code) ─────────────────
+SEARCH_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'extract_flat': True,
+    'playlistend': 20,
+}
 
-# Updated clients to bypass modern YouTube blocks
-STRATEGIES = [
-    {'extractor_args': {'youtube': {'client': ['android', 'ios']}}},
-    {'extractor_args': {'youtube': {'client': ['tv', 'mweb']}}},
-    {'extractor_args': {'youtube': {'client': ['web']}}},
-    {}, # Default fallback
-]
+STREAM_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'format': 'bestaudio/best',
+}
 
-def make_opts(strategy=None):
-    opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'format': AUDIO_FORMAT,
-    }
-    if _active_cookie_path:
-        opts['cookiefile'] = _active_cookie_path
-    if strategy:
-        opts.update(strategy)
-    return opts
+if _active_cookie_path:
+    SEARCH_OPTS['cookiefile'] = _active_cookie_path
+    STREAM_OPTS['cookiefile'] = _active_cookie_path
 
-def get_audio(vid_id):
-    """Try all strategies to extract audio stream URL."""
-    errors = []
-    
-    for i, strategy in enumerate(STRATEGIES):
-        try:
-            opts = make_opts(strategy)
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(
-                    f"https://www.youtube.com/watch?v={vid_id}",
-                    download=False
-                )
-                fmts = info.get('formats', [])
-                
-                # 1. Try to find a pure audio stream first
-                audio = [
-                    f for f in fmts
-                    if f.get('vcodec') in ('none', None, '')
-                    and f.get('acodec') not in ('none', None, '')
-                    and f.get('url')
-                ]
-                
-                # 2. If no pure audio exists, fall back to ANY format that contains audio
-                if not audio:
-                    audio = [
-                        f for f in fmts 
-                        if f.get('acodec') not in ('none', None, '') 
-                        and f.get('url')
-                    ]
-                
-                # 3. Absolute fallback: anything with a URL
-                if not audio:
-                    audio = [f for f in fmts if f.get('url')]
-                    
-                if not audio:
-                    errors.append(f"S{i+1}: no audio formats found")
-                    continue
-                
-                # Sort by bitrate
-                best = sorted(audio, key=lambda f: f.get('abr') or 0, reverse=True)[0]
-                print(f"✅ Strategy {i+1} worked | abr={best.get('abr')}")
-                return best, info
-                
-        except Exception as e:
-            errors.append(f"S{i+1}: {str(e)[:120]}")
-            print(f"❌ Strategy {i+1} failed: {str(e)[:120]}")
+def extract_best_audio(vid_id):
+    """User's proven extraction logic."""
+    with yt_dlp.YoutubeDL(STREAM_OPTS) as ydl:
+        info = ydl.extract_info(
+            f"https://www.youtube.com/watch?v={vid_id}",
+            download=False
+        )
+        formats = info.get('formats', [])
 
-    raise Exception("All streaming strategies failed:\n" + "\n".join(errors))
+        # Prefer audio-only formats
+        audio_only = [
+            f for f in formats
+            if f.get('vcodec') in ('none', None) and f.get('acodec') not in ('none', None) and f.get('url')
+        ]
+        if not audio_only:
+            audio_only = [f for f in formats if f.get('url')]
 
+        if not audio_only:
+            raise Exception("No playable formats found")
+
+        best = sorted(audio_only, key=lambda f: f.get('abr') or 0, reverse=True)[0]
+        return best, info
 
 # ── Routes ─────────────────────────────────────────────────────────────
 
@@ -151,31 +113,27 @@ def search():
     q = request.args.get('q', '').strip()
     if not q:
         return jsonify([])
-        
-    try:
-        opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'playlistend': 20}
-        if _active_cookie_path:
-            opts['cookiefile'] = _active_cookie_path
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(f"ytsearch20:{q}", download=False)
+    try:
+        with yt_dlp.YoutubeDL(SEARCH_OPTS) as ydl:
+            # Using the original ' music' appending trick you provided
+            info = ydl.extract_info(f"ytsearch20:{q} music", download=False)
             results = []
             for entry in info.get('entries', []):
-                dur = entry.get('duration') or 0
-                if dur > 600: continue
-                vid_id = entry.get('id', '')
-                if not vid_id or len(vid_id) != 11: continue
-                
+                duration = entry.get('duration') or 0
+                if duration > 600:  # skip anything over 10 mins
+                    continue
                 results.append({
-                    'id': vid_id,
-                    'title': entry.get('title', ''),
-                    'channel': entry.get('uploader') or entry.get('channel', ''),
-                    'duration': dur,
-                    'thumb': f"https://i.ytimg.com/vi/{vid_id}/mqdefault.jpg",
-                    'source': 'youtube',
+                    'id':       entry.get('id', ''),
+                    'title':    entry.get('title', ''),
+                    'channel':  entry.get('uploader') or entry.get('channel', ''),
+                    'duration': duration,
+                    'thumb':    f"https://i.ytimg.com/vi/{entry.get('id')}/mqdefault.jpg",
+                    'source':   'youtube',
                 })
-        return jsonify(results[:15])
+            return jsonify(results[:15])
     except Exception as e:
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/trending')
@@ -191,18 +149,14 @@ def trending():
     q = queries.get(lang, 'trending music 2025')
     
     try:
-        opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'playlistend': 20}
-        if _active_cookie_path:
-            opts['cookiefile'] = _active_cookie_path
-
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with yt_dlp.YoutubeDL(SEARCH_OPTS) as ydl:
             info = ydl.extract_info(f"ytsearch20:{q}", download=False)
             results = []
             for entry in info.get('entries', []):
                 dur = entry.get('duration') or 0
                 if dur > 600: continue
                 vid_id = entry.get('id', '')
-                if not vid_id or len(vid_id) != 11: continue
+                if not vid_id: continue
                 
                 results.append({
                     'id': vid_id,
@@ -214,15 +168,16 @@ def trending():
                 })
         return jsonify(results[:15])
     except Exception as e:
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/stream')
 def stream():
     vid_id = request.args.get('id', '').strip()
-    if len(vid_id) != 11: return jsonify({'error': 'invalid YouTube ID'}), 400
+    if not vid_id: return jsonify({'error': 'no id'}), 400
     
     try:
-        best, info = get_audio(vid_id)
+        best, info = extract_best_audio(vid_id)
         return jsonify({
             'title': info.get('title', ''),
             'channel': info.get('uploader', ''),
@@ -232,15 +187,16 @@ def stream():
             'source': 'youtube',
         })
     except Exception as e:
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/proxy')
 def proxy():
     vid_id = request.args.get('id', '').strip()
-    if len(vid_id) != 11: return jsonify({'error': 'invalid YouTube ID'}), 400
+    if not vid_id: return jsonify({'error': 'no id'}), 400
     
     try:
-        best, _ = get_audio(vid_id)
+        best, _ = extract_best_audio(vid_id)
         yt_url = best['url']
         ext = best.get('ext', 'webm')
         ct_map = {'webm':'audio/webm','m4a':'audio/mp4','mp4':'audio/mp4','ogg':'audio/ogg','opus':'audio/ogg'}
@@ -265,6 +221,7 @@ def proxy():
 
         return Response(stream_with_context(r.iter_content(chunk_size=16384)), status=r.status_code, headers=resp_headers)
     except Exception as e:
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/lyrics')
@@ -286,6 +243,7 @@ def lyrics():
         elif plain: return jsonify({'lyrics': plain, 'synced': False, 'source': 'lrclib'})
         return jsonify({'lyrics': None, 'synced': False})
     except Exception as e:
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
